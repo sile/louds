@@ -199,3 +199,7 @@
       DO 
       (lbs-traverse lbs node-names child-node (1+ level)))))
 			 
+
+(defstruct node
+  node-number
+  position-in-lbs)
