@@ -2,7 +2,7 @@
   (:use :common-lisp))
 (in-package :louds)
 
-	   
+#|	   
 (defun select0 (lbs i)
   "LBSの中のi番目の0の位置を返す。iが0以下、もしくはi番目の0がLBSに存在しない場合は-1を返す。"
   (loop FOR pos FROM 0
@@ -203,3 +203,135 @@
 (defstruct node
   node-number
   position-in-lbs)
+|#
+
+(defun tree-to-lbs (tree &aux names)
+  (values
+   (coerce
+    (loop WITH  tree-que = `((:super-root ,tree))
+          WHILE tree-que
+      APPEND
+      (destructuring-bind ((node-name . children) . rest-trees) tree-que
+        (push node-name names)
+        (setf tree-que (append rest-trees children))
+        (append (loop REPEAT (length children) COLLECT 1) 
+                '(0))))
+   'bit-vector)
+   (coerce (reverse names) 'vector)))
+                 
+(defun run (bits start bit)
+  (let* ((beg (position bit            bits :start start))
+	 (end (or (position (logxor 1 bit) bits :start beg)
+		  (length bits))))
+    (list (- end beg)
+	  (position bit bits :start end))))
+
+(defun partition (lbs)
+  (let ((r0 (loop FOR (length next) = (run lbs (or next 0) 0)
+		  APPEND `(,@(loop REPEAT (1- length) COLLECT 0) 1)
+		  WHILE next))
+	(r1 (loop FOR (length next) = (run lbs (or next 0) 1)
+		  APPEND `(,@(loop REPEAT (1- length) COLLECT 0) 1)
+		  WHILE next)))
+    (values (coerce r0 'bit-vector)
+	    (coerce r1 'bit-vector))))
+
+(defstruct (pnode (:conc-name ""))
+  r0
+  r1
+  node-num
+  pos-in-lbs)
+
+(defun new-pnode (tree)
+  (multiple-value-bind (lbs names) (tree-to-lbs tree)
+    (multiple-value-bind (r0 r1) (partition lbs)
+      (values (make-pnode :r0 r0 :r1 r1 :node-num 0 :pos-in-lbs 0)
+	      names))))
+
+(defun select1 (bits i)
+  "i番目の1の位置を返す"
+  (loop FOR pos FROM 0
+	FOR bit ACROSS bits
+    WHEN (= 1 bit)
+    DO (when (zerop (decf i))
+	 (return pos))
+    FINALLY (return -1)))
+
+(defvar *tree* 
+  '(:a (:b)
+       (:c (:f) 
+           (:g (:i))) 
+       (:d) 
+       (:e (:h))))
+
+(defun isleaf (node)
+  (with-slots (r0 node-num) node
+    (= 0 (bit r0 node-num))))
+
+(defun next-sibling (node)
+  (with-slots (r1 node-num) node
+    (when (= 0 (bit r1 node-num))
+      (incf node-num)
+      node)))
+
+(defun prev-sibling (node)
+  (with-slots (r1 node-num) node
+    (when (= 0 (bit r1 (1- node-num)))
+      (decf node-num)
+      node)))
+
+(defun first-child (node)
+  (unless (isleaf node)
+    (with-slots (r1 node-num pos-in-lbs) node
+      (setf pos-in-lbs node-num)
+      (setf node-num (1+ (select1 r1 (+ node-num 1))))
+      node)))
+
+(defun last-child (node)
+  (unless (isleaf node)
+    (with-slots (r1 node-num pos-in-lbs) node
+      (setf pos-in-lbs node-num)
+      (setf node-num (select1 r1 (+ node-num 2)))
+      node)))
+
+(defun parent(node)
+  (with-slots (r0 r1 node-num pos-in-lbs) node
+    (setf node-num (select1 r0 pos-in-lbs))
+    (setf pos-in-lbs (- node-num pos-in-lbs))
+    node))
+#|
+(defvar *tree* 
+  '(:a (:b)
+       (:c (:f) 
+           (:g (:i))) 
+       (:d) 
+       (:e (:h))))
+
+== r0 ==
+#*1010101001
+:a 1
+:b 0
+:c 1
+:d 0
+:e 1
+:f 0
+:g 1
+:h 0
+:i 0
+## 1
+
+== r1 ==
+#*100010111
+(:a)          1
+(:b :c :d :e) 0001
+(:f :g)       01
+(:h)          1
+(:i)          1
+
+(select1 r0 (rank1- r1 num))
+num = 8
+pos = 4
+
+new-num = 6 = (select1 r0 4)
+new-pos = 2 = (- new-num pos)
+|#
