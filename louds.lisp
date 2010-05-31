@@ -41,46 +41,43 @@
   (multiple-value-bind (lbs names) (tree-to-lbs tree)
     (multiple-value-bind (r0 r1) (partition lbs)
       (make-louds++ :r0 r0
-		    :r1 r1
-		    :names (subseq names 1)))))
+                    :r1 r1
+                    :names (subseq names 1)))))
 
-(defun isleaf (node)
-  (with-slots (r0 node-num) node
+(defun node-name (node-num louds++)
+  (with-slots (names) louds++
+    (aref names node-num)))
+
+(defun isleaf (node-num louds++)
+  (with-slots (r0) louds++
     (= 0 (bit r0 node-num))))
 
-(defun next-sibling (node)
-  (with-slots (r1 node-num) node
+(defun next-sibling (node-num louds++)
+  (with-slots (r1) louds++
     (when (= 0 (bit r1 node-num))
-      (incf node-num)
-      node)))
+      (1+ node-num))))
 
-(defun prev-sibling (node)
-  (with-slots (r1 node-num) node
+(defun prev-sibling (node-num louds++)
+  (with-slots (r1) louds++
     (when (= 0 (bit r1 (1- node-num)))
-      (decf node-num)
-      node)))
+      (1- node-num))))
 
-(defun first-child (node)
-  (unless (isleaf node)
-    (with-slots (r0 r1 node-num) node
-      (let ((nth-non-leaf-node (rank1 r0 node-num)))
-        (setf node-num (1+ (select1 r1 nth-non-leaf-node))))
-      node)))
+(defun first-child (node-num louds++)
+  (unless (isleaf node-num louds++)
+    (with-slots (r0 r1) louds++
+      (let ((nth-parent (rank1 r0 node-num))) ; node-numが何個目の親かを取得する
+        (1+ (select1 r1 nth-parent))))))
 
-(defun last-child (node)
-  (unless (isleaf node)
-    (with-slots (r0 r1 node-num) node
-      (let ((nth-non-leaf-node (rank1 r0 node-num)))
-        (setf node-num (select1 r1 (1+ nth-non-leaf-node))))
-      node)))
+(defun last-child (node-num louds++)
+  (unless (isleaf node-num louds++)
+    (with-slots (r0 r1) louds++
+      (let ((nth-parent (rank1 r0 node-num))) ; node-numが何個目の親かを取得する
+        (select1 r1 (1+ nth-parent))))))
 
-(defun parent(node)
-  (with-slots (r0 r1 node-num) node
-    (let ((parent (rank1- r1 node-num)))
-      (setf node-num (select1 r0 parent)))
-    node))
-
-       
+(defun parent(node-num louds++)
+  (with-slots (r0 r1) louds++
+    (let ((nth-parent (rank1- r1 node-num)))  ; node-numの親が、何個目の親かを取得する
+      (select1 r0 nth-parent))))
 
 (defstruct (pnode (:conc-name ""))
   r0
@@ -193,3 +190,12 @@ select1(R1,rank1-(R0,i)) => ノードiに対応する1bitの数
 #|
 r0でi番目の1は、1番目の親ノードに対応する
 |#
+
+(defun louds++-traverse (louds++ &optional (root-node 0) (level 0))
+  (format t "~&~V@T~S~%" level (node-name root-node louds++))
+  (unless (isleaf root-node louds++)
+    (loop FOR child-node = (first-child root-node louds++)
+                      THEN (next-sibling child-node louds++)
+      WHILE child-node
+      DO
+      (louds++-traverse louds++ child-node (1+ level)))))
