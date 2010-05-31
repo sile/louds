@@ -15,36 +15,84 @@
                 '(0))))
    'bit-vector)
    (coerce (reverse names) 'vector)))
-                 
-(defun run (bits start bit)
-  (let* ((beg (position bit            bits :start start))
-	 (end (or (position (logxor 1 bit) bits :start beg)
-		  (length bits))))
+           
+(defun run-length (lbs start bit &aux (~bit (logxor 1 bit)))
+  (let* ((beg (position  bit lbs :start start))
+         (end (position ~bit lbs :start beg)))
+    (setf end (or end (length lbs)))
     (list (- end beg)
-	  (position bit bits :start end))))
+          (position bit lbs :start end))))
 
 (defun partition (lbs)
-  (let ((r0 (loop FOR (length next) = (run lbs (or next 0) 0)
-		  APPEND `(,@(loop REPEAT (1- length) COLLECT 0) 1)
-		  WHILE next))
-	(r1 (loop FOR (length next) = (run lbs (or next 0) 1)
-		  APPEND `(,@(loop REPEAT (1- length) COLLECT 0) 1)
-		  WHILE next)))
-    (values (coerce r0 'bit-vector)
-	    (coerce r1 'bit-vector))))
+  (flet ((rX (bit)
+           (loop FOR (length next) = (run-length lbs (or next 0) bit)
+                 FOR 0bits = (loop REPEAT (1- length) COLLECT 0)
+                 APPEND `(,@0bits 1)
+                 WHILE next)))
+    (values (coerce (rX 0) 'bit-vector)    ; r0
+            (coerce (rX 1) 'bit-vector)))) ; r1
+
+(defstruct louds++ 
+  r0     ; r0
+  r1     ; r1
+  names) ; 各ノードの名前を保持する配列
+
+(defun tree-to-louds++ (tree)
+  (multiple-value-bind (lbs names) (tree-to-lbs tree)
+    (multiple-value-bind (r0 r1) (partition lbs)
+      (make-louds++ :r0 r0
+		    :r1 r1
+		    :names (subseq names 1)))))
+
+(defun isleaf (node)
+  (with-slots (r0 node-num) node
+    (= 0 (bit r0 node-num))))
+
+(defun next-sibling (node)
+  (with-slots (r1 node-num) node
+    (when (= 0 (bit r1 node-num))
+      (incf node-num)
+      node)))
+
+(defun prev-sibling (node)
+  (with-slots (r1 node-num) node
+    (when (= 0 (bit r1 (1- node-num)))
+      (decf node-num)
+      node)))
+
+(defun first-child (node)
+  (unless (isleaf node)
+    (with-slots (r0 r1 node-num) node
+      (let ((nth-non-leaf-node (rank1 r0 node-num)))
+        (setf node-num (1+ (select1 r1 nth-non-leaf-node))))
+      node)))
+
+(defun last-child (node)
+  (unless (isleaf node)
+    (with-slots (r0 r1 node-num) node
+      (let ((nth-non-leaf-node (rank1 r0 node-num)))
+        (setf node-num (select1 r1 (1+ nth-non-leaf-node))))
+      node)))
+
+(defun parent(node)
+  (with-slots (r0 r1 node-num) node
+    (let ((parent (rank1- r1 node-num)))
+      (setf node-num (select1 r0 parent)))
+    node))
+
+       
 
 (defstruct (pnode (:conc-name ""))
   r0
   r1
-  node-num
-  parent-node)
+  node-num)
 
 (defun tree-to-pnode (tree)
   (multiple-value-bind (r0 r1) (partition (tree-to-lbs tree))
     (make-pnode :r0 r0
 		:r1 r1
-		:node-num 1
-		:parent-node 1)))
+		:node-num 0)))
+
 
 (defun select1 (bits i)
   "i番目の1の位置を返す"
@@ -61,6 +109,12 @@
     WHEN (= 1 bit)
     SUM 1))
 
+(defun rank1 (bits last)
+  (loop FOR i FROM 0 TO last
+	FOR bit ACROSS bits
+    WHEN (= 1 bit)
+    SUM 1))
+
 (defvar *tree* 
   '(:a (:b)
        (:c (:f) 
@@ -68,45 +122,6 @@
        (:d) 
        (:e (:h))))
 
-(defun isleaf (node)
-  (with-slots (r0 node-num) node
-    (= 0 (bit r0 (1- node-num)))))
-
-(defun next-sibling (node)
-  (with-slots (r1 node-num parent-node) node
-    (when (= 0 (bit r1 (1- node-num)))
-      (incf node-num)
-      (unless (isleaf node)
-	(incf parent-node))
-      node)))
-
-(defun prev-sibling (node)
-  (with-slots (r1 node-num parent-node) node
-    (when (= 0 (bit r1 (- node-num 2)))
-      (unless (isleaf node)
-	(decf parent-node))
-      (decf node-num)
-      node)))
-
-(defun first-child (node)
-  (unless (isleaf node)
-    (with-slots (r0 r1 node-num) node
-      (let ((parent (rank1- r0 node-num)))        
-        (setf node-num (+ 2 (select1 r1 parent))))
-      node)))
-
-(defun last-child (node)
-  (unless (isleaf node)
-    (with-slots (r0 r1 node-num) node
-      (let ((parent (rank1- r0 node-num)))
-        (setf node-num (1+ (select1 r1 (1+ parent)))))
-      node)))
-
-(defun parent(node)
-  (with-slots (r0 r1 node-num parent-node) node
-    (let ((parent (rank1- r1 (1- node-num)))) 
-      (setf node-num (1+ (select1 r0 parent))))
-    node))
 
 #|
 select1(LBS, i) 
