@@ -30,6 +30,5 @@
 	(i~~ (mod (1+ i) *t*)))
     (let ((x (if (> i~ 0) (aref A1 (floor i~)) 0))
 	  (y (loop FOR j FROM 1 TO i~~ SUM (aref A2 (+ (floor i~) j)))))
-      
-      (values i~ i~~ x y))))
+      (+ x (aref T1 y)))))
 
