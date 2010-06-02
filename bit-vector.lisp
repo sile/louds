@@ -1,4 +1,10 @@
-(defparameter *bv* #*10101001010010100011101101101010101110101010110010101)
+(defun log2 (x)
+  (log x 2))
+
+(defparameter *bv* 
+  (coerce (loop FOR i FROM 0 BELOW 70000 COLLECT (mod i 2))
+	  'bit-vector))
+
 (defparameter M (length *bv*))
 (defparameter S (loop FOR i FROM 0
 		      FOR b ACROSS *bv*
@@ -6,10 +12,10 @@
 		      COLLECT i))
 
 (defparameter C 1)
-(defparameter *T* (floor (/ (log M 2) 
-			    (* 2 C (log (log M 2) 2)))))
-(defparameter Z (floor (* C (log (log M 2) 2))))
-(defparameter ST (loop FOR i FROM *t* BELOW (length S) BY *t*
+(defparameter *T* (round (/ (log2 M) 
+			    (* 2 C (log2 (log2 M))))))
+(defparameter Z (ceiling #|round|# (* C (log2 (log2 M)))))
+(defparameter ST (loop FOR i FROM 0 BELOW (length S) BY *t*
 		       COLLECT (elt S i)))
 
 (defparameter A1 (coerce ST 'vector))
@@ -26,9 +32,10 @@
    'vector))
 
 (defun select (i)
-  (let ((i~  (/ i *t*))
-	(i~~ (mod (1+ i) *t*)))
-    (let ((x (if (> i~ 0) (aref A1 (floor i~)) 0))
-	  (y (loop FOR j FROM 1 TO i~~ SUM (aref A2 (+ (floor i~) j)))))
+  (let ((i~  (floor i *t*))
+	(i~~ (mod i *t*)))  ; orig: (mod i *t*)
+    (let ((x (if (> i~ 0) (aref A1 i~) 0))
+	  (y (loop FOR j FROM 1 TO i~~ SUM (aref A2 (+ i~ j)))))
+      (print `(,i~ ,i~~ ,x ,y))
       (+ x (aref T1 y)))))
 
