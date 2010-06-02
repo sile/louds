@@ -46,3 +46,11 @@
 ;; 2-2] 数が多い場合は、位置情報を直接保持するのではなく、T間隔で間引く
 ;; 2-3] 間引いた分は、連接位置間の差分情報で補完する
 
+
+(defun gen-a3-blocks (n)
+  (loop FOR i FROM *t* BELOW n BY *t*
+    COLLECT (loop FOR j FROM (1+ (- i *t*)) TO i COLLECT j)))
+
+(defparameter A3
+  (coerce (mapcar (lm (length (intersection $ st))) (gen-a3-blocks M))
+	  'vector))
