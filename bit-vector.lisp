@@ -1,43 +1,76 @@
 (defun log2 (x)
   (log x 2))
 
+(defun collect-1bit-index (bits)
+  (loop FOR i FROM 0
+	FOR b ACROSS bits
+	WHEN (= b 1)
+	COLLECT i))
+
+(defun max-difference (1bit-indices)
+  (loop FOR i FROM 1 BELOW (length 1bit-indices)
+	MAXIMIZE (- (aref 1bit-indices (- i 0))
+		    (aref 1bit-indices (- i 1)))))
+
+(defun calc-c (1bit-indices bits-length)
+  (loop WITH dif = (max-difference 1bit-indices)
+	FOR C FROM 1
+    WHILE (> dif (expt (log2 bits-length) C))
+    FINALLY (return C)))
+	
+(defun ready-select1 (bits)
+  (let* ((1bit-indices (coerce (collect-1bit-index bits) 'vector))
+	 (M (length bits))
+	 (c (calc-c 1bit-indices (length bits)))
+	 (interval (round (/ (log2 M)
+			     (* 2 C (log2 (log2 M)))))))
+    (values m c interval (length 1bit-indices))))
+    
 (defparameter *bv* 
-  (coerce (loop FOR i FROM 0 BELOW 70000 COLLECT (mod i 2))
+  (coerce (loop FOR i FROM 0 BELOW 10000000
+		COLLECT (if (zerop (random 3)) 1 0)) ;(mod i 2))
 	  'bit-vector))
 
 (defparameter M (length *bv*))
-(defparameter S (loop FOR i FROM 0
-		      FOR b ACROSS *bv*
-		      WHEN (= b 1)
-		      COLLECT i))
+(defparameter S (coerce (loop FOR i FROM 0
+			      FOR b ACROSS *bv*
+			      WHEN (= b 1)
+			      COLLECT i)
+			'vector))
 
 (defparameter C 1)
 (defparameter *T* (round (/ (log2 M) 
 			    (* 2 C (log2 (log2 M))))))
 (defparameter Z (ceiling #|round|# (* C (log2 (log2 M)))))
 (defparameter ST (loop FOR i FROM 0 BELOW (length S) BY *t*
-		       COLLECT (elt S i)))
+		       COLLECT (aref S i)))
 
 (defparameter A1 (coerce ST 'vector))
-(defparameter A2 (coerce (loop FOR (a b) ON S 
-			       WHILE b
-			       COLLECT (- b a))
+(defparameter A2 (coerce (cons 0 (loop FOR (a b) ON (coerce S 'list)
+				       WHILE b
+				       COLLECT (- b a)))
 			 'vector))
-(defparameter T1 
-  (coerce
-   (loop FOR i FROM 0 BELOW (ash 1 (* *T* Z))
-     COLLECT
-     (loop FOR j FROM 0 BELOW *T*
-	   SUM (ldb (byte Z (* Z j)) i)))
-   'vector))
-
 (defun select (i)
   (let ((i~  (floor i *t*))
-	(i~~ (mod i *t*)))  ; orig: (mod i *t*)
-    (let ((x (if (> i~ 0) (aref A1 i~) 0))
-	  (y (loop FOR j FROM 1 TO i~~ SUM (aref A2 (+ i~ j)))))
+	(i~~ (mod i *t*)))
+    (let ((x (aref A1 i~))
+	  (y (loop FOR j FROM (1+ (- i i~~)) TO i SUM (aref A2 j))))
       (print `(,i~ ,i~~ ,x ,y))
-      (+ x (aref T1 y)))))
+      (+ x y))))
+
+(defun sel (i aa1 aa2)
+  (declare (optimize (speed 3) (safety 0))
+	   (unmuffle-conditions compiler-note)
+	   ((mod #.array-total-size-limit) i)
+	   ((simple-array (unsigned-byte 16)) aa1)
+	   ((simple-array (unsigned-byte 8)) aa2))
+  (multiple-value-bind (i~ i~~) (floor i 4)
+    (+ (aref aa1 i~)
+       (loop WITH x OF-TYPE (mod #.(ash array-total-size-limit -1)) = 0
+	     FOR j FROM (1+ (- i i~~)) TO i
+	     DO (incf x (aref aa2 j))
+	     FINALLY (return x)))))
+
 
 ;;; select
 ;; 1] i番目の1ビットの位置を予め計算しておく
