@@ -132,11 +132,19 @@
       (if (< nth i)
 	  (impl nth block-low 0 32)
 	(+ i (impl (- nth i) block-high 0 32))))))
-	  
+
+(defun rank0~ (block-num bv)
+  (with-slots (all-0bit-flags a0f-rank-aux) bv
+    (multiple-value-bind (div rem) (floor block-num 32)
+      (let ((base (aref a0f-rank-aux div)))
+	(+ base (logcount (ldb (byte rem 0) (aref all-0bit-flags div))))))))
+      
+(defun deleted-block-num (pos bv)
+  (rank0~ (floor pos 32) bv))
 
 ;; NOTE: 0から始まる
 (defun select1 (nth bv)
-  (with-slots (blocks 1bit-counts) bv
+  (with-slots (blocks 1bit-counts 0bit-acc-counts) bv
     (multiple-value-bind (div #|rem|#) (floor nth 32)
       (let* ((base-pos (get-base-pos div bv))
 	     (base-block-num (* 2 (floor base-pos +BLOCK-SIZE+)))
@@ -151,10 +159,37 @@
 	    WHILE (> nth (+ rank1 (aref 1bit-counts block)))
 	    FINALLY (return (values block rank1)))
 	  ;; TODO: AとA~の差分調整
-	  (+ (* block-num +BLOCK-SIZE+)
+	  
+	  (+ rank1
+	     (aref 0bit-acc-counts block-num)
 	     (select1-block (- nth rank1)
 			    (aref blocks (+ 0 (* 2 block-num)))
 			    (aref blocks (+ 1 (* 2 block-num))))))))))
-				  
-	     
-	      
+
+(defun rank1 (pos bv)
+  (with-slots (0bit-acc-counts blocks) bv
+    (let* ((adj-pos (- pos (* (deleted-block-num pos bv) +BLOCK-SIZE+)))
+	   (block-num (floor adj-pos +BLOCK-SIZE+))
+	   (rem (nth-value 1 (floor adj-pos +BLOCK-SIZE+))))
+      (+ (- (* block-num +BLOCK-SIZE+) (aref 0bit-acc-counts block-num))
+	 
+	 (logcount (ldb (byte (min rem 32) 0)       (aref blocks (+ 0 (* 2 block-num)))))
+	 (logcount (ldb (byte (max (- rem 32) 0) 0) (aref blocks (+ 1 (* 2 block-num)))))))))
+
+(defun rank0 (pos bv)
+  (- pos (rank1 pos bv)))
+	 
+#|	      
+(defstruct bv
+  ;; for select/rank
+  (blocks          #() :type (simple-array (unsigned-byte 32)))
+  (0bit-acc-counts #() :type (simple-array (unsigned-byte 32)))
+  
+  ;; for select
+  (1bit-counts     #() :type (simple-array (unsigned-byte 8)))
+  (sel-indices     #() :type (simple-array (unsigned-byte 16)))
+
+  ;; for rank
+  (all-0bit-flags  #() :type (simple-array (unsigned-byte 32)))
+  (a0f-rank-aux    #() :type (simple-array (unsigned-byte 32))))  ;; -> rank-indices
+|#
