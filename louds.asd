@@ -7,4 +7,5 @@
   :description ""
   
   :serial t
-  :components ((:file "louds")))
+  :components ((:file "louds")
+               (:file "bit-vector")))

@@ -1,89 +1,102 @@
-(defun log2 (x)
-  (log x 2))
+(in-package :louds)
 
-(defun collect-1bit-index (bits)
-  (loop FOR i FROM 0
-	FOR b ACROSS bits
-	WHEN (= b 1)
-	COLLECT i))
+(defconstant +BLOCK-SIZE+ 64)
+(defconstant +SELECT-INDEX-INTERVAL+ 32)
 
-(defun max-difference (1bit-indices)
-  (loop FOR i FROM 1 BELOW (length 1bit-indices)
-	MAXIMIZE (- (aref 1bit-indices (- i 0))
-		    (aref 1bit-indices (- i 1)))))
+(defvar *sample-bits*
+  (coerce (loop REPEAT 1000 COLLECT (if (oddp (random 5)) 1 0)) 'bit-vector))
 
-(defun calc-c (1bit-indices bits-length)
-  (loop WITH dif = (max-difference 1bit-indices)
-	FOR C FROM 1
-    WHILE (> dif (expt (log2 bits-length) C))
-    FINALLY (return C)))
-	
-(defun ready-select1 (bits)
-  (let* ((1bit-indices (coerce (collect-1bit-index bits) 'vector))
-	 (M (length bits))
-	 (c (calc-c 1bit-indices (length bits)))
-	 (interval (round (/ (log2 M)
-			     (* 2 C (log2 (log2 M)))))))
-    (values m c interval (length 1bit-indices))))
-    
-(defparameter *bv* 
-  (coerce (loop FOR i FROM 0 BELOW 10000000
-		COLLECT (if (zerop (random 3)) 1 0)) ;(mod i 2))
+(defstruct bv
+  ;; for select/rank
+  (blocks          #() :type (simple-array (unsigned-byte 32)))
+  (0bit-acc-counts #() :type (simple-array (unsigned-byte 32)))
+  
+  ;; for select
+  (1bit-counts     #() :type (simple-array (unsigned-byte 8)))
+  (sel-indices     #() :type (simple-array (unsigned-byte 16)))
+
+  ;; for rank
+  (all-0bit-flags  #() :type (simple-array (unsigned-byte 32)))
+  (a0f-rank-aux    #() :type (simple-array (unsigned-byte 32))))  ;; -> rank-indices
+
+(defun bits-to-num (bits start end)
+  (loop FOR i FROM start BELOW (min end (length bits))
+	FOR b = (bit bits i)
+    SUM (ash b (- i start))))
+
+(defun to-u32-blocks (tmp-blocks)
+  (coerce
+   (loop FOR bs ACROSS tmp-blocks
+	 APPEND
+	 (loop FOR i FROM 0 BELOW +BLOCK-SIZE+ BY 32
+	       COLLECT (bits-to-num bs i (+ i 32))))
+   '(vector (unsigned-byte 32))))
+
+(defun count-acc-0bit (tmp-blocks)
+  (coerce
+   (loop FOR bs ACROSS tmp-blocks
+	 FOR 0bit-cnt = (count 0 bs)
+	 FOR acc = 0 THEN (+ acc 0bit-cnt)
+     UNLESS (= +BLOCK-SIZE+ 0bit-cnt)
+     COLLECT acc)
+   '(vector (unsigned-byte 32))))
+
+(defun count-1bit-per-block (tmp-blocks-rem-all0)
+  (coerce
+   (loop FOR bs ACROSS tmp-blocks-rem-all0
+     COLLECT (count 1 bs))
+   '(vector (unsigned-byte 8))))
+
+(defun compress-sel-indices (list &optional acc (base 0) (i 7))
+  (if (endp list)
+      (coerce (nreverse acc) '(vector (unsigned-byte 16)))
+    (destructuring-bind (n . rest) list
+      (if (zerop i)
+	  (compress-sel-indices rest `(,(ldb (byte 16 0) n) ,(ldb (byte 16 16) n) . ,acc) n 7)
+	(compress-sel-indices rest `(,(- n base) . ,acc) base (1- i))))))
+
+(defun calc-sel-indices (tmp-blocks-per-all0)
+  (compress-sel-indices
+   (loop WITH nth = 0
+	 WITH i   = 0
+	 FOR bs ACROSS tmp-blocks-per-all0
+     APPEND
+     (loop FOR b ACROSS bs
+       WHEN (and (incf i)
+		 (= b 1)
+		 (incf nth)
+		 (zerop (mod nth +SELECT-INDEX-INTERVAL+)))
+       COLLECT i))))
+
+(defun calc-all-0bit-flags (tmp-blocks)
+  (coerce (loop FOR bs ACROSS tmp-blocks
+		COLLECT (if (zerop (count 1 bs)) 1 0))
 	  'bit-vector))
 
-(defparameter M (length *bv*))
-(defparameter S (coerce (loop FOR i FROM 0
-			      FOR b ACROSS *bv*
-			      WHEN (= b 1)
-			      COLLECT i)
-			'vector))
+(defun to-u32-flags (bits)
+  (coerce
+   (loop FOR i FROM 0 BELOW (length bits) BY 32
+	 COLLECT (bits-to-num bits i (+ i 32)))
+   '(vector (unsigned-byte 32))))
 
-(defparameter C 1)
-(defparameter *T* (round (/ (log2 M) 
-			    (* 2 C (log2 (log2 M))))))
-(defparameter Z (ceiling #|round|# (* C (log2 (log2 M)))))
-(defparameter ST (loop FOR i FROM 0 BELOW (length S) BY *t*
-		       COLLECT (aref S i)))
+(defun calc-aux (flags)
+  (coerce
+   (loop WITH nth = 0
+	 FOR u32 ACROSS flags
+     COLLECT (prog1 nth
+	       (incf nth (logcount u32))))
+   '(vector (unsigned-byte 32))))
 
-(defparameter A1 (coerce ST 'vector))
-(defparameter A2 (coerce (cons 0 (loop FOR (a b) ON (coerce S 'list)
-				       WHILE b
-				       COLLECT (- b a)))
-			 'vector))
-(defun select (i)
-  (let ((i~  (floor i *t*))
-	(i~~ (mod i *t*)))
-    (let ((x (aref A1 i~))
-	  (y (loop FOR j FROM (1+ (- i i~~)) TO i SUM (aref A2 j))))
-      (print `(,i~ ,i~~ ,x ,y))
-      (+ x y))))
-
-(defun sel (i aa1 aa2)
-  (declare (optimize (speed 3) (safety 0))
-	   (unmuffle-conditions compiler-note)
-	   ((mod #.array-total-size-limit) i)
-	   ((simple-array (unsigned-byte 16)) aa1)
-	   ((simple-array (unsigned-byte 8)) aa2))
-  (multiple-value-bind (i~ i~~) (floor i 4)
-    (+ (aref aa1 i~)
-       (loop WITH x OF-TYPE (mod #.(ash array-total-size-limit -1)) = 0
-	     FOR j FROM (1+ (- i i~~)) TO i
-	     DO (incf x (aref aa2 j))
-	     FINALLY (return x)))))
-
-
-;;; select
-;; 1] i番目の1ビットの位置を予め計算しておく
-;; 2] その際に以下の二点が云々
-;; 2-1] 位置情報(整数)は、それを保持するのに最低限必要なビット数で表現する(4byteは使わない)
-;; 2-2] 数が多い場合は、位置情報を直接保持するのではなく、T間隔で間引く
-;; 2-3] 間引いた分は、連接位置間の差分情報で補完する
-
-
-(defun gen-a3-blocks (n)
-  (loop FOR i FROM *t* BELOW n BY *t*
-    COLLECT (loop FOR j FROM (1+ (- i *t*)) TO i COLLECT j)))
-
-(defparameter A3
-  (coerce (mapcar (lm (length (intersection $ st))) (gen-a3-blocks M))
-	  'vector))
+(defun build-bv (bits &aux (bits-len (length bits)))
+  (let* ((tmp-blocks (coerce 
+		      (loop FOR i FROM 0 BELOW bits-len BY +BLOCK-SIZE+
+			    COLLECT (subseq bits i (min (+ i +BLOCK-SIZE+) bits-len)))
+		      'vector))
+	 (tmp-blocks-rem-all0 (remove-if (lambda (bs) (every #'zerop bs)) tmp-blocks)))
+    (make-bv
+     :blocks (to-u32-blocks tmp-blocks-rem-all0)
+     :0bit-acc-counts (count-acc-0bit tmp-blocks)
+     :1bit-counts (count-1bit-per-block tmp-blocks-rem-all0)
+     :sel-indices (calc-sel-indices tmp-blocks-rem-all0)
+     :all-0bit-flags #1=(to-u32-flags (calc-all-0bit-flags tmp-blocks))
+     :a0f-rank-aux (calc-aux #1#))))
