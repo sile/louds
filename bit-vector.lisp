@@ -113,7 +113,7 @@
 (defun rank1-block (pos low high)
   (if (< pos 32)
       (logcount (ldb (byte pos 0) low))
-    (+ (logcount (ldb (byte (- 32   0) 0) low))
+    (+ (logcount (ldb (byte 32         0) low))
        (logcount (ldb (byte (- pos 32) 0) high)))))
 
 (defun get-acc-1bit-count (base-nth base-pos block-low block-high)
@@ -121,6 +121,7 @@
 			   block-low block-high)))
 
 ;; TODO: tableも使う
+;; XXX: 非効率 => 末尾再帰, 8bit以下はlogcountを使わない
 (defun select1-block (nth block-low block-high)
   (labels ((impl (nth block beg end)
              (let* ((m (floor (- end beg) 2))
@@ -156,10 +157,8 @@
 	(multiple-value-bind (block-num rank1)
 	  (loop FOR block FROM (floor base-block-num 2)
 		AND rank1 = base-rank1 THEN (+ rank1 (aref 1bit-counts block))
-	    WHILE (> nth (+ rank1 (aref 1bit-counts block)))
+	    WHILE (print (> nth (+ rank1 (aref 1bit-counts block))))
 	    FINALLY (return (values block rank1)))
-	  ;; TODO: AとA~の差分調整
-	  
 	  (+ rank1
 	     (aref 0bit-acc-counts block-num)
 	     (select1-block (- nth rank1)
@@ -178,7 +177,7 @@
 
 (defun rank0 (pos bv)
   (- pos (rank1 pos bv)))
-	 
+
 #|	      
 (defstruct bv
   ;; for select/rank
@@ -193,3 +192,13 @@
   (all-0bit-flags  #() :type (simple-array (unsigned-byte 32)))
   (a0f-rank-aux    #() :type (simple-array (unsigned-byte 32))))  ;; -> rank-indices
 |#
+(defun total-size (bv)
+  (with-slots (blocks 0bit-acc-counts
+	       1bit-counts sel-indices
+	       all-0bit-flags a0f-rank-aux) bv
+    (+ (* (length blocks) 32)
+       (* (length 0bit-acc-counts) 32)
+       (* (length 1bit-counts) 8)
+       (* (length sel-indices) 16)
+       (* (length all-0bit-flags) 32)
+       (* (length a0f-rank-aux) 32))))
