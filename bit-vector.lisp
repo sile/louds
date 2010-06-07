@@ -36,7 +36,7 @@
   (coerce
    (loop FOR bs ACROSS tmp-blocks
 	 FOR 0bit-cnt = (count 0 bs)
-	 FOR acc = 0 THEN (+ acc 0bit-cnt)
+	 AND acc = 0 THEN (+ acc 0bit-cnt)
      UNLESS (= +BLOCK-SIZE+ 0bit-cnt)
      COLLECT acc)
    '(vector (unsigned-byte 32))))
@@ -47,7 +47,7 @@
      COLLECT (count 1 bs))
    '(vector (unsigned-byte 8))))
 
-(defun compress-sel-indices (list &optional acc (base 0) (i 7))
+(defun compress-sel-indices (list &optional acc (base 0) (i 0))
   (if (endp list)
       (coerce (nreverse acc) '(vector (unsigned-byte 16)))
     (destructuring-bind (n . rest) list
@@ -100,3 +100,61 @@
      :sel-indices (calc-sel-indices tmp-blocks-rem-all0)
      :all-0bit-flags #1=(to-u32-flags (calc-all-0bit-flags tmp-blocks))
      :a0f-rank-aux (calc-aux #1#))))
+
+(defun get-base-pos (div bv)
+  (with-slots (sel-indices) bv
+    (multiple-value-bind (8cnt rem) (floor div 8)
+      (let ((base (+ (aref sel-indices (+ 0 (* 8cnt 8)))
+		     (aref sel-indices (+ 1 (* 8cnt 8))))))
+	(unless (zerop rem)
+	  (incf base (aref sel-indices (+ div 8cnt))))
+	base))))
+
+(defun rank1-block (pos low high)
+  (if (< pos 32)
+      (logcount (ldb (byte pos 0) low))
+    (+ (logcount (ldb (byte (- 32   0) 0) low))
+       (logcount (ldb (byte (- pos 32) 0) high)))))
+
+(defun get-acc-1bit-count (base-nth base-pos block-low block-high)
+  (- base-nth (rank1-block (nth-value 1 (floor base-pos +BLOCK-SIZE+))
+			   block-low block-high)))
+
+;; TODO: tableも使う
+(defun select1-block (nth block-low block-high)
+  (labels ((impl (nth block beg end)
+             (let* ((m (floor (- end beg) 2))
+		    (i (logcount (ldb (byte m beg) block))))
+	       (cond ((= nth i) i)
+		     ((< nth i) (impl nth block beg (+ beg m)))
+		     (t    (+ i (impl (- nth i) block (+ beg m) end)))))))
+    (let ((i (logcount block-low)))
+      (if (< nth i)
+	  (impl nth block-low 0 32)
+	(+ i (impl (- nth i) block-high 0 32))))))
+	  
+
+;; NOTE: 0から始まる
+(defun select1 (nth bv)
+  (with-slots (blocks 1bit-counts) bv
+    (multiple-value-bind (div #|rem|#) (floor nth 32)
+      (let* ((base-pos (get-base-pos div bv))
+	     (base-block-num (* 2 (floor base-pos +BLOCK-SIZE+)))
+	     (base-block-low  (aref blocks (+ 0 base-block-num)))
+	     (base-block-high (aref blocks (+ 1 base-block-num)))
+	     (base-rank1 (get-acc-1bit-count (* div 32)
+					     base-pos
+					     base-block-low base-block-high)))
+	(multiple-value-bind (block-num rank1)
+	  (loop FOR block FROM (floor base-block-num 2)
+		AND rank1 = base-rank1 THEN (+ rank1 (aref 1bit-counts block))
+	    WHILE (> nth (+ rank1 (aref 1bit-counts block)))
+	    FINALLY (return (values block rank1)))
+	  ;; TODO: AとA~の差分調整
+	  (+ (* block-num +BLOCK-SIZE+)
+	     (select1-block (- nth rank1)
+			    (aref blocks (+ 0 (* 2 block-num)))
+			    (aref blocks (+ 1 (* 2 block-num))))))))))
+				  
+	     
+	      
