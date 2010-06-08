@@ -2,6 +2,8 @@
   (:use :common-lisp))
 (in-package :louds)
 
+(defvar *fastest* '(optimize (speed 3) (safety 0) (compilation-speed 0) (space 0) (debug 0)))
+
 (defun tree-to-lbs (tree &aux names)
   (values
    (coerce
@@ -91,7 +93,7 @@
 		:node-num 0)))
 
 
-(defun select1 (bits i)
+(defun -select1 (i bits)
   "i番目の1の位置を返す"
   (loop FOR pos FROM 0
 	FOR bit ACROSS bits
@@ -106,7 +108,7 @@
     WHEN (= 1 bit)
     SUM 1))
 
-(defun rank1 (bits last)
+(defun -rank1 (last bits)
   (loop FOR i FROM 0 TO last
 	FOR bit ACROSS bits
     WHEN (= 1 bit)
