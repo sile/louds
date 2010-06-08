@@ -133,6 +133,7 @@
      :all-0bit-flags #1=(to-u32-flags (calc-all-0bit-flags tmp-blocks))
      :a0f-rank-aux (calc-aux #1#))))
 
+
 (defun get-base-pos (div bv)
   (declare (index div)
 	   (bv bv)
@@ -156,9 +157,25 @@
     (+ (logcount (ldb (byte 32         0) low))
        (logcount (ldb (byte (- pos 32) 0) high))))))
 
-(defun get-acc-1bit-count (base-nth base-pos block-low block-high)
-  (- base-nth (rank1-block (nth-value 1 (floor base-pos +BLOCK-SIZE+))
-			   block-low block-high)))
+(defun rank1-block2 (pos low high bv block-num)
+  (declare ((mod 64) pos)
+	   ((unsigned-byte 32) low high)
+	   (bv bv)
+	   #.*fastest*)
+  (with-slots (1bit-cnt-until-last-selidx) bv
+    (let ((last-1bit-cnt (aref 1bit-cnt-until-last-selidx block-num)))
+      ;; XXX: 境界条件チェック
+      (if (or (< last-1bit-cnt 32)
+	      (< pos 32))
+	  last-1bit-cnt
+	(rank1-block pos low high)))))
+
+(defun get-acc-1bit-count (base-nth base-pos block-low block-high bv block-num)
+  (- base-nth (rank1-block2 (mod base-pos +BLOCK-SIZE+)
+			    block-low block-high
+			    bv
+			    block-num
+			    )))
 
 ;; TODO: tableも使う
 ;; XXX: 非効率 => 末尾再帰, 8bit以下はlogcountを使わない
@@ -200,7 +217,10 @@
 	     (base-block-high (aref blocks (+ 1 base-block-num)))
 	     (base-rank1 (get-acc-1bit-count (* div 32)
 					     base-pos
-					     base-block-low base-block-high)))
+					     base-block-low base-block-high
+					     bv 
+					     (/ base-block-num 2) 
+					     )))
 	;;(print `(,base-pos ,base-block-num ,base-block-low ,base-block-high ,base-rank1))
 	(multiple-value-bind (block-num rank1)
 	  (loop FOR block FROM (floor base-block-num 2)
