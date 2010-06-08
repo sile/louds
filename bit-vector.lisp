@@ -17,6 +17,8 @@
   (1bit-counts     #() :type (simple-array (unsigned-byte 8)))
   (sel-indices     #() :type (simple-array (unsigned-byte 16)))
 
+  (1bit-cnt-until-last-selidx #() :type (simple-array (unsigned-byte 8)))
+  
   ;; for rank
   (all-0bit-flags  #() :type (simple-array (unsigned-byte 32)))
   (a0f-rank-aux    #() :type (simple-array (unsigned-byte 32))))  ;; -> rank-indices
@@ -90,6 +92,32 @@
 	       (incf nth (logcount u32))))
    '(vector (unsigned-byte 32))))
 
+(defun calc0 (tmp-blocks-per-all0)
+  (coerce 
+   ;; TODO: cons 0 ?
+   (loop WITH nth = 0
+	 WITH i   = 0
+	 FOR bs ACROSS tmp-blocks-per-all0
+     APPEND
+     (loop FOR b ACROSS bs
+       WHEN (and (incf i)
+		 (= b 1)
+		 (incf nth)
+		 (zerop (mod nth +SELECT-INDEX-INTERVAL+)))
+       COLLECT i))
+   '(vector (unsigned-byte 32))))
+
+;; TODO: declaim: (defun rank1-block (pos low high)K(defun select1-block (nth block-low block-high)
+(defun calc1 (sel-indices blocks block-size)
+  (let ((ary (make-array block-size :element-type '(unsigned-byte 8) :initial-element 0)))
+    (loop FOR idx ACROSS sel-indices 
+	  FOR block-num = (floor idx +BLOCK-SIZE+)
+      DO (setf (aref ary block-num)
+	       (rank1-block (mod idx +BLOCK-SIZE+)
+			    (aref blocks (+ 0 (* 2 block-num)))
+			    (aref blocks (+ 1 (* 2 block-num))))))
+    ary))
+
 (defun build-bv (bits &aux (bits-len (length bits)))
   (let* ((tmp-blocks (coerce 
 		      (loop FOR i FROM 0 BELOW bits-len BY +BLOCK-SIZE+
@@ -97,10 +125,11 @@
 		      'vector))
 	 (tmp-blocks-rem-all0 (remove-if (lambda (bs) (every #'zerop bs)) tmp-blocks)))
     (make-bv
-     :blocks (to-u32-blocks tmp-blocks-rem-all0)
+     :blocks #2=(to-u32-blocks tmp-blocks-rem-all0)
      :0bit-acc-counts (count-acc-0bit tmp-blocks)
      :1bit-counts (count-1bit-per-block tmp-blocks-rem-all0)
      :sel-indices (calc-sel-indices tmp-blocks-rem-all0)
+     :1bit-cnt-until-last-selidx (calc1 (calc0 tmp-blocks-rem-all0) #2# (length tmp-blocks-rem-all0))
      :all-0bit-flags #1=(to-u32-flags (calc-all-0bit-flags tmp-blocks))
      :a0f-rank-aux (calc-aux #1#))))
 
@@ -110,9 +139,9 @@
 	   #.*fastest*)
   (with-slots (sel-indices) bv
     (multiple-value-bind (8cnt rem) (floor div 8)
-      (print `(,8cnt ,rem ,div))
-      (let ((base (+ (aref sel-indices (+ 0 (* 8cnt 8)))
-		     (aref sel-indices (+ 1 (* 8cnt 8))))))
+      ;;(print `(,8cnt ,rem ,div))
+      (let ((base (+ (aref sel-indices (+ 0 (* 8cnt 8) 8cnt))
+		     (aref sel-indices (+ 1 (* 8cnt 8) 8cnt)))))
 	(unless (zerop rem)
 	  (incf base (aref sel-indices (+ div 8cnt 1))))
 	base))))
@@ -143,12 +172,14 @@
 	       (declare ((mod 32) m))
 	       (cond ((= nth i) (1- (integer-length (ldb (byte m 0) block))))
 		     ((< nth i) (impl nth block beg m))
+		     ((= m 31)  31) ;; XXX: とりあえずの応急処置
 		     (t         (impl nth block m end))))))
     (declare (ftype (function ((mod 33) (unsigned-byte 32) (mod 33) (mod 33)) (mod 33)) impl))
     (let ((i (logcount block-low)))
-      (if (< nth i)
-	  (impl nth block-low 0 32)
-	(+ 32 (the (mod 33) (impl (- nth i) block-high 0 32)))))))
+      (cond ((= nth i) (1- (integer-length block-low)))
+	    ((< nth i)
+	     (impl nth block-low 0 32))
+	    (t (+ 32 (the (mod 33) (impl (- nth i) block-high 0 32))))))))
 
 (defun rank0~ (block-num bv)
   (with-slots (all-0bit-flags a0f-rank-aux) bv
@@ -170,13 +201,13 @@
 	     (base-rank1 (get-acc-1bit-count (* div 32)
 					     base-pos
 					     base-block-low base-block-high)))
-	(print `(,base-pos ,base-block-num ,base-block-low ,base-block-high ,base-rank1))
+	;;(print `(,base-pos ,base-block-num ,base-block-low ,base-block-high ,base-rank1))
 	(multiple-value-bind (block-num rank1)
 	  (loop FOR block FROM (floor base-block-num 2)
 		AND rank1 = base-rank1 THEN (+ rank1 (aref 1bit-counts block))
 	    WHILE (> nth (+ rank1 (aref 1bit-counts block)))
 	    FINALLY (return (values block rank1)))
-	  (print `(,rank1 ,(aref 0bit-acc-counts block-num) ,block-num))
+	  ;;(print `(,rank1 ,(aref 0bit-acc-counts block-num) ,block-num))
 	  (+ rank1
 	     (aref 0bit-acc-counts block-num)
 	     (select1-block (- nth rank1)
