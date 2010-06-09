@@ -7,10 +7,13 @@
 (deftype uint16 () '(unsigned-byte 16))
 (deftype uint8  () '(unsigned-byte 8))
 (deftype array-index () '(mod #.array-total-size-limit))
+(deftype positive-fixnum () '(mod #.most-positive-fixnum))
 
 (defconstant +BLOCK-SIZE+ 64)
 (defconstant +WORD-SIZE+  32)
 (defconstant +SELECT-INDEX-INTERVAL+ 32)
+
+(deftype block-number () '(mod #.(floor array-total-size-limit +BLOCK-SIZE+)))
 
 (defstruct bitvector
   (blocks                                   t :type (simple-array uint32))
@@ -130,6 +133,7 @@
 	  (values (* base-nth +SELECT-INDEX-INTERVAL+)
 		  index))))))
 
+(declaim (ftype (function (block-number bitvector) (values uint32 uint32)) get-block))
 (defun get-block (block-num bitvector)
   (with-slots (blocks) bitvector
     (values (aref blocks (+ 0 (* 2 block-num)))
@@ -184,27 +188,35 @@
 
 ;;;;;;;;;
 ;;;; rank
+(declaim (inline flag-rank0 omitted-block-num))
 (defun flag-rank0 (block-num bitvector)
   (with-slots (src-block-all-0bit-flag SBC0F-rank-indices) bitvector
     (multiple-value-bind (idx offset) (floor block-num +WORD-SIZE+)
-      (+ (aref SBC0F-rank-indices idx) ;; XXX: indicesではない
-	 (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx)))))))
+      (the positive-fixnum
+        (+ (the positive-fixnum (aref SBC0F-rank-indices idx)) ;; XXX: indicesではない
+	   (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx))))))))
 
 (defun omitted-block-num (pos bitvector)
   (flag-rank0 (floor pos +WORD-SIZE+) bitvector))
 
 (defun rank0 (index bitvector)
+  (declare (array-index index)
+	   (bitvector bitvector)
+	   #.*fastest*)
   (multiple-value-bind (block-num offset) (floor index +BLOCK-SIZE+)
-    (decf block-num (omitted-block-num index bitvector))
+    (declare ((mod 65) offset)
+	     (block-number block-num))
+    (decf block-num (the block-number (omitted-block-num index bitvector)))
     (incf offset)
     (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
       (with-slots (block-precede-0bit-count) bitvector
-        (+ (aref block-precede-0bit-count block-num)
-	   (- offset
-	      (if (<= offset 32)
-		  (logcount (ldb (byte offset 0) block-low))
-		(+ (logcount block-low)
-		   (logcount (ldb (byte (- offset 32) 0) block-high))))))))))
+        (the positive-fixnum
+          (+ (the positive-fixnum (aref block-precede-0bit-count block-num))
+	     (- offset
+		(if (<= offset 32)
+		    (logcount (ldb (byte offset 0) block-low))
+		  (+ (logcount block-low)
+		     (logcount (ldb (byte (- offset 32) 0) block-high)))))))))))
       
 (defun rank1 (index bitvector)
-  (- index (rank0 index bitvector)))
+  (- (1+ index) (rank0 index bitvector)))
