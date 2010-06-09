@@ -1,7 +1,7 @@
 (in-package :louds)
 
-(defvar *sample-bits*
-  (coerce (loop REPEAT 1000 COLLECT (if (oddp (random 5)) 1 0)) 'bit-vector))
+(defparameter *sample-bits*
+  (coerce (loop REPEAT 100000 COLLECT (if (zerop (random 3)) 1 0)) 'bit-vector))
 
 (deftype uint32 () '(unsigned-byte 32))
 (deftype uint16 () '(unsigned-byte 16))
@@ -114,12 +114,44 @@
      :src-block-all-0bit-flag  src-block-all-0bit-flag
      :SBC0F-rank-indices       (make-SBC0F-rank-indices src-block-all-0bit-flag))))
 
+(defparameter *sample-bv* (build-bitvector *sample-bits*))
+
 ;;;;;;;;;;;
 ;;;; select
-(defun get-base-block (nth bitvector)
-  )
+(defun get-lie-block (nth bitvector)  ;; XXX: 名前
+  (with-slots (select-indices) bitvector
+    (let ((base-nth (floor nth +SELECT-INDEX-INTERVAL+)))
+      (multiple-value-bind (quot rem) (floor base-nth 8)
+        (let ((index (+ (ash (aref select-indices (+ 0 (* quot 9)))  0)
+			(ash (aref select-indices (+ 1 (* quot 9)))  16))))
+	  (unless (zerop rem)
+	    (incf index (aref select-indices (+ base-nth quot 1))))
 
-(defun goto-target-block (start-block-num precede-1bit-count bitvector)
+	  (values (* base-nth +SELECT-INDEX-INTERVAL+)
+		  index))))))
+
+(defun get-block (block-num bitvector)
+  (with-slots (blocks) bitvector
+    (values (aref blocks (+ 0 (* 2 block-num)))
+	    (aref blocks (+ 1 (* 2 block-num))))))
+
+(defun block-rank1 (pos block-num bitvector)
+  (with-slots (block-1bit-count-until-last-select-index) bitvector
+    (let ((1bit-count (aref block-1bit-count-until-last-select-index block-num)))
+      (if (or (< 1bit-count 32)  ; ブロックにはsel-idxが一つしかない
+	      (>= pos 32))       ; ブロック内の最後のsel-idxなのが確実
+	  1bit-count
+	(logcount (ldb (byte pos 0) (get-block block-num bitvector)))))))
+
+(defun get-base-block (nth bitvector)
+  (multiple-value-bind (base-nth base-index)
+		       (get-lie-block nth bitvector)
+    (multiple-value-bind (block-num offset)
+			 (floor base-index +BLOCK-SIZE+)
+      (values block-num
+	      (- base-nth (block-rank1 offset block-num bitvector))))))
+
+(defun goto-target-block (nth start-block-num precede-1bit-count bitvector)
   (with-slots (block-1bit-count) bitvector
     (loop FOR block-num FROM start-block-num
 	  FOR 1cnt     = (aref block-1bit-count block-num)
@@ -127,182 +159,52 @@
       WHILE (> nth (+ pre-1cnt 1cnt))
       FINALLY (return (values block-num pre-1cnt)))))
 
+(defun block-select1 (nth block-num bitvector)
+  (labels ((impl (nth block beg end)
+             (let* ((m (+ beg (floor (- end beg) 2)))
+		    (i (logcount (ldb (byte m 0) block))))
+	       (cond ((= nth i) (1- (integer-length (ldb (byte m 0) block))))
+		     ((< nth i) (impl nth block beg m))
+		     (t         (impl nth block m end))))))
+    (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
+      (let ((i (logcount block-low)))
+	(cond ((= nth i) (1- (integer-length block-low)))
+	      ((< nth i) (impl nth block-low 0 32))
+	      (t   (+ 32 (impl (- nth i) block-high 0 64))))))))
+
 (defun select1 (nth bitvector)
   (multiple-value-bind (base-block-num 1bit-count)
 		       (get-base-block nth bitvector)
     (multiple-value-bind (block-num 1bit-count) 
-			 (goto-target-block base-block-num 1bit-count bitvector)
-      (+ 1bit-count                                ; 1bit count
-	 (aref block-precede-0bit-count block-num) ; 0bit count
-	 (block-select1 (- nth 1bit-count) block-num bitvector)))))
-
-#+IGNORE
-(defun select1 (nth bv)
-  (with-slots (blocks 1bit-counts 0bit-acc-counts) bv
-    (multiple-value-bind (div #|rem|#) (floor nth 32)
-      (let* ((base-pos (get-base-pos div bv))
-	     (base-block-num (* 2 (floor base-pos +BLOCK-SIZE+)))
-	     (base-block-low  (aref blocks (+ 0 base-block-num)))
-	     (base-block-high (aref blocks (+ 1 base-block-num)))
-	     (base-rank1 (get-acc-1bit-count (* div 32)
-					     base-pos
-					     base-block-low base-block-high
-					     bv 
-					     (/ base-block-num 2) 
-					     )))
-	;;(print `(,base-pos ,base-block-num ,base-block-low ,base-block-high ,base-rank1))
-	(multiple-value-bind (block-num rank1)
-	  (loop FOR block FROM (floor base-block-num 2)
-		AND rank1 = base-rank1 THEN (+ rank1 (aref 1bit-counts block))
-	    WHILE (> nth (+ rank1 (aref 1bit-counts block)))
-	    FINALLY (return (values block rank1)))
-	  ;;(print `(,rank1 ,(aref 0bit-acc-counts block-num) ,block-num))
-	  (+ rank1
-	     (aref 0bit-acc-counts block-num)
-	     (select1-block (- nth rank1)
-			    (aref blocks (+ 0 (* 2 block-num)))
-			    (aref blocks (+ 1 (* 2 block-num))))))))))
-
-#|
-;;;;;;;;;;;
-;;;; select
-(defun get-base-pos (div bv)
-  (declare (array-index div)
-	   (bv bv)
-	   #.*fastest*)
-  (with-slots (sel-indices) bv
-    (multiple-value-bind (8cnt rem) (floor div 8)
-      ;;(print `(,8cnt ,rem ,div))
-      (let ((base (+ (aref sel-indices (+ 0 (* 8cnt 8) 8cnt))
-		     (aref sel-indices (+ 1 (* 8cnt 8) 8cnt)))))
-	(unless (zerop rem)
-	  (incf base (aref sel-indices (+ div 8cnt 1))))
-	base))))
-
-(defun rank1-block (pos low high)
-  (declare ((mod 64) pos)
-	   ((unsigned-byte 32) low high)
-	   #.*fastest*)
-  (the (mod 64)
-  (if (< pos 32)
-      (logcount (ldb (byte pos 0) low))
-    (+ (logcount (ldb (byte 32         0) low))
-       (logcount (ldb (byte (- pos 32) 0) high))))))
-
-(defun rank1-block2 (pos low high bv block-num)
-  (declare ((mod 64) pos)
-	   ((unsigned-byte 32) low high)
-	   (bv bv)
-	   #.*fastest*)
-  (with-slots (1bit-cnt-until-last-selidx) bv
-    (let ((last-1bit-cnt (aref 1bit-cnt-until-last-selidx block-num)))
-      ;; XXX: 境界条件チェック
-      (if (or (< last-1bit-cnt 32)
-	      (< pos 32))
-	  last-1bit-cnt
-	(rank1-block pos low high)))))
-
-(defun get-acc-1bit-count (base-nth base-pos block-low block-high bv block-num)
-  (- base-nth (rank1-block2 (mod base-pos +BLOCK-SIZE+)
-			    block-low block-high
-			    bv
-			    block-num
-			    )))
-
-;; TODO: tableも使う
-;; XXX: 非効率 => 末尾再帰, 8bit以下はlogcountを使わない
-(defun select1-block (nth block-low block-high)
-  (declare #.*fastest*
-	   ((mod 64) nth)
-	   ((unsigned-byte 32) block-low block-high))
-  (labels ((impl (nth block beg end)
-	     (let* ((m (+ beg (floor (- end beg) 2)))
-		    (i (logcount (ldb (byte m 0) block))))
-	       (declare ((mod 32) m))
-	       (cond ((= nth i) (1- (integer-length (ldb (byte m 0) block))))
-		     ((< nth i) (impl nth block beg m))
-		     ((= m 31)  31) ;; XXX: とりあえずの応急処置
-		     (t         (impl nth block m end))))))
-    (declare (ftype (function ((mod 33) (unsigned-byte 32) (mod 33) (mod 33)) (mod 33)) impl))
-    (let ((i (logcount block-low)))
-      (cond ((= nth i) (1- (integer-length block-low)))
-	    ((< nth i)
-	     (impl nth block-low 0 32))
-	    (t (+ 32 (the (mod 33) (impl (- nth i) block-high 0 32))))))))
-
-(defun rank0~ (block-num bv)
-  (with-slots (all-0bit-flags a0f-rank-aux) bv
-    (multiple-value-bind (div rem) (floor block-num 32)
-      (let ((base (aref a0f-rank-aux div)))
-	(+ base (logcount (ldb (byte rem 0) (aref all-0bit-flags div))))))))
-      
-(defun deleted-block-num (pos bv)
-  (rank0~ (floor pos 32) bv))
-
-;; NOTE: 0から始まる
-(defun select1 (nth bv)
-  (with-slots (blocks 1bit-counts 0bit-acc-counts) bv
-    (multiple-value-bind (div #|rem|#) (floor nth 32)
-      (let* ((base-pos (get-base-pos div bv))
-	     (base-block-num (* 2 (floor base-pos +BLOCK-SIZE+)))
-	     (base-block-low  (aref blocks (+ 0 base-block-num)))
-	     (base-block-high (aref blocks (+ 1 base-block-num)))
-	     (base-rank1 (get-acc-1bit-count (* div 32)
-					     base-pos
-					     base-block-low base-block-high
-					     bv 
-					     (/ base-block-num 2) 
-					     )))
-	;;(print `(,base-pos ,base-block-num ,base-block-low ,base-block-high ,base-rank1))
-	(multiple-value-bind (block-num rank1)
-	  (loop FOR block FROM (floor base-block-num 2)
-		AND rank1 = base-rank1 THEN (+ rank1 (aref 1bit-counts block))
-	    WHILE (> nth (+ rank1 (aref 1bit-counts block)))
-	    FINALLY (return (values block rank1)))
-	  ;;(print `(,rank1 ,(aref 0bit-acc-counts block-num) ,block-num))
-	  (+ rank1
-	     (aref 0bit-acc-counts block-num)
-	     (select1-block (- nth rank1)
-			    (aref blocks (+ 0 (* 2 block-num)))
-			    (aref blocks (+ 1 (* 2 block-num))))))))))
+			 (goto-target-block nth base-block-num 1bit-count bitvector)
+      (with-slots (block-precede-0bit-count) bitvector
+        (+ 1bit-count                                ; 1bit count
+	   (aref block-precede-0bit-count block-num) ; 0bit count
+	   (block-select1 (- nth 1bit-count) block-num bitvector))))))
 
 ;;;;;;;;;
 ;;;; rank
-(defun rank1 (pos bv)
-  (with-slots (0bit-acc-counts blocks) bv
-    (let* ((adj-pos (- pos (* (deleted-block-num pos bv) +BLOCK-SIZE+)))
-	   (block-num (floor adj-pos +BLOCK-SIZE+))
-	   (rem (nth-value 1 (floor adj-pos +BLOCK-SIZE+))))
-      (+ (- (* block-num +BLOCK-SIZE+) (aref 0bit-acc-counts block-num))
-	 
-	 (logcount (ldb (byte (min rem 32) 0)       (aref blocks (+ 0 (* 2 block-num)))))
-	 (logcount (ldb (byte (max (- rem 32) 0) 0) (aref blocks (+ 1 (* 2 block-num)))))))))
+(defun flag-rank0 (block-num bitvector)
+  (with-slots (src-block-all-0bit-flag SBC0F-rank-indices) bitvector
+    (multiple-value-bind (idx offset) (floor block-num +WORD-SIZE+)
+      (+ (aref SBC0F-rank-indices idx) ;; XXX: indicesではない
+	 (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx)))))))
 
-(defun rank0 (pos bv)
-  (- pos (rank1 pos bv)))
+(defun omitted-block-num (pos bitvector)
+  (flag-rank0 (floor pos +WORD-SIZE+) bitvector))
 
-#|	      
-(defstruct bv
-  ;; for select/rank
-  (blocks          #() :type (simple-array (unsigned-byte 32)))
-  (0bit-acc-counts #() :type (simple-array (unsigned-byte 32)))
-  
-  ;; for select
-  (1bit-counts     #() :type (simple-array (unsigned-byte 8)))
-  (sel-indices     #() :type (simple-array (unsigned-byte 16)))
-
-  ;; for rank
-  (all-0bit-flags  #() :type (simple-array (unsigned-byte 32)))
-  (a0f-rank-aux    #() :type (simple-array (unsigned-byte 32))))  ;; -> rank-indices
-|#
-(defun total-size (bv)
-  (with-slots (blocks 0bit-acc-counts
-	       1bit-counts sel-indices
-	       all-0bit-flags a0f-rank-aux) bv
-    (+ (* (length blocks) 32)
-       (* (length 0bit-acc-counts) 32)
-       (* (length 1bit-counts) 8)
-       (* (length sel-indices) 16)
-       (* (length all-0bit-flags) 32)
-       (* (length a0f-rank-aux) 32))))
-|#
+(defun rank0 (index bitvector)
+  (multiple-value-bind (block-num offset) (floor index +BLOCK-SIZE+)
+    (decf block-num (omitted-block-num index bitvector))
+    (incf offset)
+    (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
+      (with-slots (block-precede-0bit-count) bitvector
+        (+ (aref block-precede-0bit-count block-num)
+	   (- offset
+	      (if (<= offset 32)
+		  (logcount (ldb (byte offset 0) block-low))
+		(+ (logcount block-low)
+		   (logcount (ldb (byte (- offset 32) 0) block-high))))))))))
+      
+(defun rank1 (index bitvector)
+  (- index (rank0 index bitvector)))
