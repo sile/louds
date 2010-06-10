@@ -3,17 +3,16 @@
 (defparameter *sample-bits*
   (coerce (loop REPEAT 100000 COLLECT (if (zerop (random 3)) 1 0)) 'bit-vector))
 
-(deftype uint32 () '(unsigned-byte 32))
-(deftype uint16 () '(unsigned-byte 16))
-(deftype uint8  () '(unsigned-byte 8))
-(deftype array-index () '(mod #.array-total-size-limit))
-(deftype positive-fixnum () '(mod #.most-positive-fixnum))
-
 (defconstant +BLOCK-SIZE+ 64)
 (defconstant +WORD-SIZE+  32)
 (defconstant +SELECT-INDEX-INTERVAL+ 32)
 
+(deftype uint8  () '(unsigned-byte 8))
+(deftype uint16 () '(unsigned-byte 16))
+(deftype uint32 () '(unsigned-byte 32))
 (deftype block-number () '(mod #.(floor array-total-size-limit +BLOCK-SIZE+)))
+(deftype array-index () '(mod #.array-total-size-limit))
+(deftype positive-fixnum () '(mod #.most-positive-fixnum))
 
 (defstruct (bitvector (:conc-name ""))
   (blocks                                   t :type (simple-array uint32))
@@ -177,6 +176,7 @@
 	      ((< nth i) (impl nth block-low 0 32))
 	      (t   (+ 32 (impl (- nth i) block-high 0 64))))))))
 
+(declaim (ftype (function (positive-fixnum bitvector) array-index) select1))
 (defun select1 (nth bitvector)
   (multiple-value-bind (base-block-num 1bit-count)
 		       (get-base-block nth bitvector)
@@ -189,16 +189,15 @@
 
 ;;;;;;;;;
 ;;;; rank
-(declaim (inline flag-rank0 omitted-block-num block-rank0 rank1))
-(declaim (ftype (function (block-number bitvector) positive-fixnum) rank0 rank1))
+(declaim (inline flag-rank0- omitted-block-count block-rank0 rank1))
 (defun flag-rank0- (block-num bitvector)
   (with-slots (src-block-all-0bit-flag SBC0F-rank-indices) bitvector
     (multiple-value-bind (idx offset) (floor block-num +WORD-SIZE+)
       (+ (aref SBC0F-rank-indices idx) 
 	 (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx)))))))
 
-(defun omitted-block-num (index bitvector)
-  (the block-number (flag-rank0 (floor index +WORD-SIZE+) bitvector)))
+(defun omitted-block-count (block-num bitvector)
+  (the block-number (flag-rank0- block-num bitvector)))
 
 (defun block-rank0 (offset block-num bitvector &aux (end (1+ offset)))
   (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
@@ -208,10 +207,11 @@
 	 (+ (logcount block-low)
 	    (logcount (ldb (byte (- end 32) 0) block-high)))))))
 
+(declaim (ftype (function (array-index bitvector) positive-fixnum) rank0 rank1))
 (defun rank0 (index bitvector)
   (declare #.*fastest*)
   (multiple-value-bind (block-num offset) (floor index +BLOCK-SIZE+)
-    (decf block-num (omitted-block-num index bitvector))
+    (decf block-num (omitted-block-count block-num bitvector))
     (let ((pre-0bit-count (aref (block-precede-0bit-count bitvector) block-num)))
       (declare (positive-fixnum pre-0bit-count))
       (the positive-fixnum
