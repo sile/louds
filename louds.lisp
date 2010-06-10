@@ -2,7 +2,7 @@
   (:use :common-lisp))
 (in-package :louds)
 
-(defvar *fastest* '(optimize (speed 3) (safety 0) (compilation-speed 0) (space 0) (debug 0)))
+(defparameter *fastest* '(optimize (speed 3) (safety 0) (compilation-speed 0) (debug 1)))
 
 (defun tree-to-lbs (tree &aux names)
   (values

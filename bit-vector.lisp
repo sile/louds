@@ -15,14 +15,14 @@
 
 (deftype block-number () '(mod #.(floor array-total-size-limit +BLOCK-SIZE+)))
 
-(defstruct bitvector
+(defstruct (bitvector (:conc-name ""))
   (blocks                                   t :type (simple-array uint32))
   (block-precede-0bit-count                 t :type (simple-array uint32))
   (block-1bit-count                         t :type (simple-array uint8))
   (block-1bit-count-until-last-select-index t :type (simple-array uint8))
   (select-indices                           t :type (simple-array uint16))
   (src-block-all-0bit-flag                  t :type (simple-array uint32))
-  (SBC0F-rank-indices                       t :type (simple-array uint32)))
+  (SBC0F-rank-indices                       t :type (simple-array uint32))) ;; XXX: indicesではない
 
 (defun bits-to-num (bits &optional (start 0) (end (length bits)))
   (loop FOR i      FROM start BELOW (min end (length bits))
@@ -133,6 +133,7 @@
 	  (values (* base-nth +SELECT-INDEX-INTERVAL+)
 		  index))))))
 
+(declaim (inline get-block))
 (declaim (ftype (function (block-number bitvector) (values uint32 uint32)) get-block))
 (defun get-block (block-num bitvector)
   (with-slots (blocks) bitvector
@@ -188,35 +189,35 @@
 
 ;;;;;;;;;
 ;;;; rank
-(declaim (inline flag-rank0 omitted-block-num))
-(defun flag-rank0 (block-num bitvector)
+(declaim (inline flag-rank0 omitted-block-num block-rank0 rank1))
+(declaim (ftype (function (block-number bitvector) positive-fixnum) rank0 rank1))
+(defun flag-rank0- (block-num bitvector)
   (with-slots (src-block-all-0bit-flag SBC0F-rank-indices) bitvector
     (multiple-value-bind (idx offset) (floor block-num +WORD-SIZE+)
-      (the positive-fixnum
-        (+ (the positive-fixnum (aref SBC0F-rank-indices idx)) ;; XXX: indicesではない
-	   (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx))))))))
+      (+ (aref SBC0F-rank-indices idx) 
+	 (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx)))))))
 
-(defun omitted-block-num (pos bitvector)
-  (flag-rank0 (floor pos +WORD-SIZE+) bitvector))
+(defun omitted-block-num (index bitvector)
+  (the block-number (flag-rank0 (floor index +WORD-SIZE+) bitvector)))
+
+(defun block-rank0 (offset block-num bitvector &aux (end (1+ offset)))
+  (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
+    (- end
+       (if (<= end 32)
+	   (logcount (ldb (byte end 0) block-low))
+	 (+ (logcount block-low)
+	    (logcount (ldb (byte (- end 32) 0) block-high)))))))
 
 (defun rank0 (index bitvector)
-  (declare (array-index index)
-	   (bitvector bitvector)
-	   #.*fastest*)
+  (declare #.*fastest*)
   (multiple-value-bind (block-num offset) (floor index +BLOCK-SIZE+)
-    (declare ((mod 65) offset)
-	     (block-number block-num))
-    (decf block-num (the block-number (omitted-block-num index bitvector)))
-    (incf offset)
-    (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
-      (with-slots (block-precede-0bit-count) bitvector
-        (the positive-fixnum
-          (+ (the positive-fixnum (aref block-precede-0bit-count block-num))
-	     (- offset
-		(if (<= offset 32)
-		    (logcount (ldb (byte offset 0) block-low))
-		  (+ (logcount block-low)
-		     (logcount (ldb (byte (- offset 32) 0) block-high)))))))))))
+    (decf block-num (omitted-block-num index bitvector))
+    (let ((pre-0bit-count (aref (block-precede-0bit-count bitvector) block-num)))
+      (declare (positive-fixnum pre-0bit-count))
+      (the positive-fixnum
+	   (+ pre-0bit-count
+	      (block-rank0 offset block-num bitvector))))))
       
 (defun rank1 (index bitvector)
+  (declare #.*fastest*)
   (- (1+ index) (rank0 index bitvector)))
