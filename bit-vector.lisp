@@ -1,7 +1,7 @@
 (in-package :louds)
 
 (defparameter *sample-bits*
-  (coerce (loop REPEAT 100000 COLLECT (if (zerop (random 3)) 1 0)) 'bit-vector))
+  (coerce (loop REPEAT 10000000 COLLECT (if (zerop (random 50)) 1 0)) 'bit-vector))
 
 (defconstant +BLOCK-SIZE+ 64)
 (defconstant +WORD-SIZE+  32)
@@ -120,14 +120,16 @@
 
 ;;;;;;;;;;;
 ;;;; select
+(declaim (inline get-lie-block))
 (defun get-lie-block (nth bitvector)  ;; XXX: 名前
   (with-slots (select-indices) bitvector
     (let ((base-nth (floor nth +SELECT-INDEX-INTERVAL+)))
       (multiple-value-bind (quot rem) (floor base-nth 8)
         (let ((index (+ (ash (aref select-indices (+ 0 (* quot 9)))  0)
 			(ash (aref select-indices (+ 1 (* quot 9)))  16))))
+	  (declare (array-index index))
 	  (unless (zerop rem)
-	    (incf index (aref select-indices (+ base-nth quot 1))))
+	    (incf index (the positive-fixnum (aref select-indices (+ base-nth quot 1)))))
 
 	  (values (* base-nth +SELECT-INDEX-INTERVAL+)
 		  index))))))
@@ -139,6 +141,7 @@
     (values (aref blocks (+ 0 (* 2 block-num)))
 	    (aref blocks (+ 1 (* 2 block-num))))))
 
+(declaim (inline block-rank1))
 (defun block-rank1 (pos block-num bitvector)
   (with-slots (block-1bit-count-until-last-select-index) bitvector
     (let ((1bit-count (aref block-1bit-count-until-last-select-index block-num)))
@@ -147,6 +150,9 @@
 	  1bit-count
 	(logcount (ldb (byte pos 0) (get-block block-num bitvector)))))))
 
+(declaim (ftype (function (positive-fixnum bitvector) (values positive-fixnum array-index)) get-lie-block)
+	 (ftype (function (array-index block-number bitvector) (mod 65)) block-rank1))
+(declaim (inline get-base-block))
 (defun get-base-block (nth bitvector)
   (multiple-value-bind (base-nth base-index)
 		       (get-lie-block nth bitvector)
@@ -155,37 +161,55 @@
       (values block-num
 	      (- base-nth (block-rank1 offset block-num bitvector))))))
 
+(declaim (inline goto-target-block))
 (defun goto-target-block (nth start-block-num precede-1bit-count bitvector)
   (with-slots (block-1bit-count) bitvector
-    (loop FOR block-num FROM start-block-num
-	  FOR 1cnt     = (aref block-1bit-count block-num)
-	  AND pre-1cnt = precede-1bit-count THEN (+ pre-1cnt 1cnt)
+    (loop FOR block-num OF-TYPE fixnum   FROM start-block-num
+	  FOR 1cnt      OF-TYPE (mod 65) = (aref block-1bit-count block-num)
+	  AND pre-1cnt  OF-TYPE fixnum   = precede-1bit-count THEN (+ pre-1cnt 1cnt)
       WHILE (> nth (+ pre-1cnt 1cnt))
       FINALLY (return (values block-num pre-1cnt)))))
 
+(declaim (inline block-select1))
 (defun block-select1 (nth block-num bitvector)
   (labels ((impl (nth block beg end)
              (let* ((m (+ beg (floor (- end beg) 2)))
 		    (i (logcount (ldb (byte m 0) block))))
+	       (declare ((mod 33) m))
 	       (cond ((= nth i) (1- (integer-length (ldb (byte m 0) block))))
 		     ((< nth i) (impl nth block beg m))
 		     (t         (impl nth block m end))))))
+    (declare (ftype (function ((mod 65) uint32 (mod 33) (mod 65)) (mod 33)) impl))
     (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
       (let ((i (logcount block-low)))
 	(cond ((= nth i) (1- (integer-length block-low)))
 	      ((< nth i) (impl nth block-low 0 32))
-	      (t   (+ 32 (impl (- nth i) block-high 0 64))))))))
+	      (t   (+ 32 (the (mod 33) (impl (- nth i) block-high 0 64)))))))))
+
+(declaim (ftype (function (positive-fixnum bitvector) 
+			  (values block-number positive-fixnum))
+		get-base-block)
+	 (ftype (function (positive-fixnum block-number positive-fixnum bitvector) 
+			  (values block-number positive-fixnum))
+		goto-target-block)
+	 (ftype (function (positive-fixnum block-number bitvector)
+			  (mod 65))
+		block-select1))
 
 (declaim (ftype (function (positive-fixnum bitvector) array-index) select1))
 (defun select1 (nth bitvector)
+  (declare #.*fastest*
+	   (bitvector bitvector)
+	   (positive-fixnum nth))
   (multiple-value-bind (base-block-num 1bit-count)
 		       (get-base-block nth bitvector)
     (multiple-value-bind (block-num 1bit-count) 
 			 (goto-target-block nth base-block-num 1bit-count bitvector)
       (with-slots (block-precede-0bit-count) bitvector
-        (+ 1bit-count                                ; 1bit count
-	   (aref block-precede-0bit-count block-num) ; 0bit count
-	   (block-select1 (- nth 1bit-count) block-num bitvector))))))
+        (the positive-fixnum 
+	     (+ 1bit-count                                ; 1bit count
+		(the positive-fixnum (aref block-precede-0bit-count block-num)) ; 0bit count
+		(block-select1 (- nth 1bit-count) block-num bitvector)))))))
 
 ;;;;;;;;;
 ;;;; rank
