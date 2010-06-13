@@ -2,24 +2,21 @@
 
 (defconstant +BLOCK-SIZE+ 64)
 (defconstant +WORD-SIZE+  32)
-(defconstant +SELECT-INDEX-INTERVAL+ 128)
+(defconstant +SELECT-INDEX-INTERVAL+ 64) ;128)
 
 #-IGNORE
 (defparameter *sample-bits*
-  (coerce (loop REPEAT 1000000 COLLECT (if (zerop (random 1000)) 0 1)) 'bit-vector))
+  (coerce (loop REPEAT 1000000 COLLECT (if (zerop (random 2)) 1 0)) 'bit-vector))
 
-(deftype uint8  () '(unsigned-byte 8))
-(deftype uint16 () '(unsigned-byte 16))
-(deftype uint32 () '(unsigned-byte 32))
 (deftype block-number () '(mod #.(floor array-total-size-limit +BLOCK-SIZE+)))
 (deftype array-index () '(mod #.array-total-size-limit))
 (deftype positive-fixnum () '(mod #.most-positive-fixnum))
+(deftype uint32 () '(unsigned-byte 32))
 
 (defstruct (bitvector (:conc-name ""))
   (blocks                   t :type (simple-array uint32))
-  (block-precede-1bit-count t :type (simple-array uint32))
-  (block-1bit-count         t :type (simple-array uint8))
-  (select-indices           t :type (simple-array uint32)))
+  (block-precede-1bit-count t :type (simple-array positive-fixnum))
+  (select-indices           t :type (simple-array block-number)))
 
 (defun bits-to-num (bits &optional (start 0) (end (length bits)))
   (loop FOR i      FROM start BELOW (min end (length bits))
@@ -45,7 +42,7 @@
 	FOR count = (count 1 bits)
 	AND total = 0 THEN (+ total count)
     COLLECT total INTO 0bit-counts
-    FINALLY (return (coerce 0bit-counts '(vector uint32)))))
+    FINALLY (return (coerce (append 0bit-counts `(,total)) '(vector array-index)))))
 
 ;;;;;;;;;
 ;; TODO: 最後にも番兵値を入れる
@@ -64,12 +61,7 @@
 			    `(,(length bit-blocks))))))
 
 (defun make-select-indices (select-indices-list)
-  (coerce select-indices-list '(vector uint32)))
-
-(defun make-block-1bit-count (bit-blocks)
-  (loop FOR bits ACROSS bit-blocks 
-    COLLECT (count 1 bits) INTO 1bit-counts
-    FINALLY (return (coerce 1bit-counts '(vector uint8)))))
+  (coerce select-indices-list '(vector block-number)))
 
 (defun build-bitvector (bit-string)
   (let* ((bit-blocks (make-bit-blocks bit-string))
@@ -79,8 +71,7 @@
      :select-indices           (make-select-indices select-indices-list)
      
      :blocks                   blocks
-     :block-precede-1bit-count (make-block-precede-1bit-count bit-blocks)
-     :block-1bit-count         (make-block-1bit-count bit-blocks))))
+     :block-precede-1bit-count (make-block-precede-1bit-count bit-blocks))))
 
 (defparameter *sample-bv* (build-bitvector *sample-bits*))
 
@@ -107,23 +98,27 @@
 	      ((< nth i) (impl nth block-low 0 32))
 	      (t   (+ 32 (impl (- nth i) block-high 0 64))))))))
 
+(declaim (inline target-block-bound))
+(defun target-block-bound (nth bitvector)
+  (with-slots (select-indices) bitvector
+    (let ((idx (floor nth +SELECT-INDEX-INTERVAL+)))
+      (values (+ 0 (aref select-indices (+ 0 idx)))
+	      (+ 1 (aref select-indices (+ 1 idx))))))) ; (values 0 (length ...))
+
 (defun select1 (nth bitvector)
   (declare #.*fastest*
 	   (positive-fixnum nth)
 	   (bitvector bitvector))
-  (with-slots (block-precede-1bit-count block-1bit-count blocks select-indices) bitvector
-    (loop WITH block-beg OF-TYPE block-number = (aref select-indices #1=(floor nth +SELECT-INDEX-INTERVAL+)) ;0
-	  WITH block-end OF-TYPE block-number = (1+ (aref select-indices (1+ #1#))) ;(length block-1bit-count)
-	  FOR block-num  OF-TYPE block-number = (+ block-beg (floor (- block-end block-beg) 2))
-	  FOR start OF-TYPE positive-fixnum = (aref block-precede-1bit-count block-num)
-	  FOR end   OF-TYPE positive-fixnum = (1+ (+ start (aref block-1bit-count block-num)))
-;      DO (print `(,block-beg ,block-num ,block-end ,start ,nth ,end))
-;      DO (sleep 0.5)
-      WHEN (< start nth end) DO (loop-finish)
-      WHEN (<= nth start)    DO (setf block-end block-num)
-      WHEN (>= nth end)      DO (setf block-beg block-num)
-      FINALLY 
-      (return (+ (* block-num +BLOCK-SIZE+) (block-select1 (- nth start) block-num bitvector))))))
+  (with-slots (block-precede-1bit-count) bitvector
+    (multiple-value-bind (block-beg block-end) (target-block-bound nth bitvector)
+      (loop FOR block-num OF-TYPE block-number = (+ block-beg (floor (- block-end block-beg) 2))
+	    FOR start OF-TYPE positive-fixnum  = (aref block-precede-1bit-count block-num)
+	    FOR end   OF-TYPE positive-fixnum  = (1+ (aref block-precede-1bit-count (1+ block-num)))
+        WHEN (< start nth end) DO (loop-finish)
+	WHEN (<= nth start)    DO (setf block-end block-num)
+	WHEN (>= nth end)      DO (setf block-beg block-num)
+	FINALLY 
+	(return (+ (* block-num +BLOCK-SIZE+) (block-select1 (- nth start) block-num bitvector)))))))
 
 (declaim (inline block-rank1))
 (defun block-rank1 (offset block-num bitvector)
