@@ -1,7 +1,10 @@
 (in-package :louds)
 
+(defconstant +BLOCK-SIZE+ 64)
+
+#|
 (defparameter *sample-bits*
-  (coerce (loop REPEAT 10000000 COLLECT (if (zerop (random 50)) 1 0)) 'bit-vector))
+  (coerce (loop REPEAT 10000000 COLLECT (if (zerop (random 200)) 1 0)) 'bit-vector))
 
 (defconstant +BLOCK-SIZE+ 64)
 (defconstant +WORD-SIZE+  32)
@@ -213,15 +216,15 @@
 
 ;;;;;;;;;
 ;;;; rank
-(declaim (inline flag-rank0- omitted-block-count block-rank0 rank1))
-(defun flag-rank0- (block-num bitvector)
+(declaim (inline flag-rank1- omitted-block-count block-rank0 rank1))
+(defun flag-rank1- (block-num bitvector)
   (with-slots (src-block-all-0bit-flag SBC0F-rank-indices) bitvector
     (multiple-value-bind (idx offset) (floor block-num +WORD-SIZE+)
       (+ (aref SBC0F-rank-indices idx) 
 	 (logcount (ldb (byte offset 0) (aref src-block-all-0bit-flag idx)))))))
 
 (defun omitted-block-count (block-num bitvector)
-  (the block-number (flag-rank0- block-num bitvector)))
+  (the block-number (flag-rank1- block-num bitvector)))
 
 (defun block-rank0 (offset block-num bitvector &aux (end (1+ offset)))
   (multiple-value-bind (block-low block-high) (get-block block-num bitvector)
@@ -231,17 +234,33 @@
 	 (+ (logcount block-low)
 	    (logcount (ldb (byte (- end 32) 0) block-high)))))))
 
+(declaim (inline src-all0-block?))
+(defun src-all0-block? (block-num bitvector)
+  (with-slots (src-block-all-0bit-flag) bitvector
+    (multiple-value-bind (idx offset) (floor block-num +WORD-SIZE+)
+      (ldb-test (byte 1 offset) (aref src-block-all-0bit-flag idx)))))
+
 (declaim (ftype (function (array-index bitvector) positive-fixnum) rank0 rank1))
+
 (defun rank0 (index bitvector)
   (declare #.*fastest*)
-  (multiple-value-bind (block-num offset) (floor index +BLOCK-SIZE+)
-    (decf block-num (omitted-block-count block-num bitvector))
-    (let ((pre-0bit-count (aref (block-precede-0bit-count bitvector) block-num)))
-      (declare (positive-fixnum pre-0bit-count))
-      (the positive-fixnum
-	   (+ pre-0bit-count
-	      (block-rank0 offset block-num bitvector))))))
+  (multiple-value-bind (src-block-num offset) (floor index +BLOCK-SIZE+)
+    (let ((block-num (- src-block-num (omitted-block-count src-block-num bitvector))))
+      (let ((pre-0bit-count (aref (block-precede-0bit-count bitvector) block-num)))
+	(declare (positive-fixnum pre-0bit-count))
+	(print `(,src-block-num ,block-num ,index ,offset ,pre-0bit-count))
+	(the positive-fixnum
+	     (if (print (src-all0-block? src-block-num bitvector))
+		 (+ (- pre-0bit-count
+		       (* (1+ (- (- src-block-num block-num) ;(omitted-block-count src-block-num bitvector)
+				 (omitted-block-count block-num bitvector)))
+			  +BLOCK-SIZE+))
+		    (1+ offset))
+	       (+ pre-0bit-count
+		  (block-rank0 offset block-num bitvector))))))))
       
 (defun rank1 (index bitvector)
   (declare #.*fastest*)
   (- (1+ index) (rank0 index bitvector)))
+
+|#
