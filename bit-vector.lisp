@@ -12,7 +12,7 @@
 (deftype array-index () '(mod #.array-total-size-limit))
 (deftype positive-fixnum () '(mod #.most-positive-fixnum))
 (deftype uint32 () '(unsigned-byte 32))
- 
+
 (defstruct (bitvector (:conc-name ""))
   (blocks                   t :type (simple-array uint32))
   (block-precede-1bit-count t :type (simple-array positive-fixnum))
@@ -40,9 +40,9 @@
 (defun make-block-precede-1bit-count (bit-blocks)
   (loop FOR bits ACROSS bit-blocks
 	FOR count = (count 1 bits)
-	AND total = 0 THEN (+ total count)
     COLLECT total INTO 0bit-counts
-    FINALLY (return (coerce (append 0bit-counts `(,total)) '(vector array-index)))))
+    SUM count     INTO total
+    FINALLY (return (coerce `(,@0bit-counts ,total) '(vector positive-fixnum)))))
 
 ;;;;;;;;;
 ;; TODO: 最後にも番兵値を入れる
