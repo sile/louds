@@ -12,7 +12,7 @@
 (deftype array-index () '(mod #.array-total-size-limit))
 (deftype positive-fixnum () '(mod #.most-positive-fixnum))
 (deftype uint32 () '(unsigned-byte 32))
-
+ 
 (defstruct (bitvector (:conc-name ""))
   (blocks                   t :type (simple-array uint32))
   (block-precede-1bit-count t :type (simple-array positive-fixnum))
