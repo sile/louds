@@ -1,8 +1,75 @@
 (defpackage louds
-  (:use :common-lisp))
+  (:use :common-lisp :common-utils))
 (in-package :louds)
 
 (defparameter *fastest* '(optimize (speed 3) (safety 0) (compilation-speed 0) (debug 1)))
+
+(defun tree-to-lbs++ (tree node-count &key next-node child-count node-value value-type)
+  (let ((r0 (make-array node-count :element-type 'bit :initial-element 0))
+	(r1 (make-array node-count :element-type 'bit :initial-element 0))
+	(i0 0)
+	(i1 0)
+	(node)
+	(vals (make-array node-count :element-type value-type)))
+    (flet ((add-to-r0 (has-child?)
+             (when has-child? 
+	       (setf (bit r0 i0) 1))
+	     (incf i0))
+	   (add-to-r1 (child-count)
+	     (when (plusp child-count)
+	       (incf i1 child-count)
+	       (setf (bit r1 (1- i1)) 1))))
+      (add-to-r1 1)
+      (loop 
+       (setf (values node tree) (funcall next-node tree))
+       (let ((child-cnt (funcall child-count node)))
+	 (setf (aref vals i0) (funcall node-value node))
+	 (add-to-r0 (plusp child-cnt))
+	 (add-to-r1 child-cnt))
+       (when (null tree)
+	 (return))))
+    (values r0 
+	    r1
+	    vals)))
+
+#|
+(defun node-count (tree)
+  (length (flatten tree)))
+
+(defun child-count (node)
+  (length (cdr node)))
+
+(defun node-value (node)
+  (car node))
+
+(defun next-node (que)
+  (destructuring-bind ((name . children) . rest) que
+    (values (cons name children)
+	    (append rest children))))
+
+(louds::tree-to-lbs++ 
+ `(,louds::*tree*)
+ (node-count louds::*tree*)
+ :next-node #'next-node
+ :child-count #'child-count
+ :node-value #'node-value
+ :value-type t)
+|#
+
+(defun tree-to-r0r1 (tree)
+  (let ((r0 '())
+	(r1 '(1))
+	(names '()))
+    (nlet self ((que `(,tree)))
+      (when que
+	(destructuring-bind ((node-name . children) . rest) que
+	  (push node-name names)
+	  (push (if children 1 0) r0)
+	  (when children
+	    (setf r1 (append '(1) (loop REPEAT (1- (length children)) COLLECT 0) r1)))
+	  (self (append rest children)))))
+    (values (coerce (reverse r0) 'bit-vector)
+	    (coerce (reverse r1) 'bit-vector))))
 
 (defun tree-to-lbs (tree &aux names)
   (values
