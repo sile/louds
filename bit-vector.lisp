@@ -40,9 +40,9 @@
 (defun make-block-precede-1bit-count (bit-blocks)
   (loop FOR bits ACROSS bit-blocks
         FOR count = (count 1 bits)
-    COLLECT total INTO 0bit-counts
+    COLLECT total INTO 1bit-counts
     SUM count     INTO total
-    FINALLY (return (coerce `(,@0bit-counts ,total) '(vector positive-fixnum)))))
+    FINALLY (return (coerce `(,@1bit-counts ,total) '(vector positive-fixnum)))))
 
 ;;;;;;;;;
 ;; TODO: 最後にも番兵値を入れる
